@@ -35,10 +35,10 @@ import (
 	"github.com/pkg/errors"
 	"github.com/prometheus/common/log"
 	githttp "gopkg.in/src-d/go-git.v4/plumbing/transport/http"
-	"helm.sh/helm/pkg/repo"
+	"helm.sh/helm/v3/pkg/repo"
 	corev1 "k8s.io/api/core/v1"
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -50,7 +50,7 @@ import (
 )
 
 var (
-	// annotation to record a ctr's last sync at timestamp. This was intend to avoid sync chartrepo too frequency
+	// LastSyncAt annotation to record a ctr's last sync at timestamp. This was intend to avoid sync chartrepo too frequency
 	LastSyncAt = "cpaas.io/last-sync-at"
 
 	transCfg = &http.Transport{
@@ -76,8 +76,7 @@ type ChartRepoReconciler struct {
 // +kubebuilder:rbac:groups=alauda.io.alauda.io,resources=chartrepoes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=alauda.io.alauda.io,resources=chartrepoes/status,verbs=get;update;patch
 
-func (r *ChartRepoReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
-	ctx := context.Background()
+func (r *ChartRepoReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log.WithValues("chartrepo", req.NamespacedName)
 
 	if req.NamespacedName.Namespace != r.Namespace {
@@ -262,6 +261,8 @@ func (r *ChartRepoReconciler) buildChartRepoFromGit(ctx context.Context, cr *v1b
 	if data == nil {
 		data = map[string][]byte{}
 	}
+	u := string(data["username"])
+	p := string(data["password"])
 
 	var gr *git.Repository
 
@@ -275,13 +276,15 @@ func (r *ChartRepoReconciler) buildChartRepoFromGit(ctx context.Context, cr *v1b
 		if err != nil {
 			return false, err
 		}
-		err = w.Pull(&git.PullOptions{
-			RemoteName: "origin",
-			Auth: &githttp.BasicAuth{
-				Username: string(data["username"]),
-				Password: string(data["password"]),
-			},
-		})
+
+		gpo := &git.PullOptions{RemoteName: "origin"}
+		if u != "" && p != "" {
+			gpo.Auth = &githttp.BasicAuth{
+				Username: u,
+				Password: p,
+			}
+		}
+		err = w.Pull(gpo)
 		if err != nil && err != git.NoErrAlreadyUpToDate {
 			return false, err
 		}
@@ -289,14 +292,17 @@ func (r *ChartRepoReconciler) buildChartRepoFromGit(ctx context.Context, cr *v1b
 	} else {
 		log.Info("git clone source", "dir", dir, "url", cr.Spec.Source.URL)
 
-		g, err := git.PlainClone(dir, false, &git.CloneOptions{
-			Auth: &githttp.BasicAuth{
-				Username: string(data["username"]),
-				Password: string(data["password"]),
-			},
+		gco := &git.CloneOptions{
 			URL:      cr.Spec.Source.URL,
 			Progress: os.Stdout,
-		})
+		}
+		if u != "" && p != "" {
+			gco.Auth = &githttp.BasicAuth{
+				Username: u,
+				Password: p,
+			}
+		}
+		g, err := git.PlainClone(dir, false, gco)
 		if err != nil {
 			return false, err
 		}
@@ -419,7 +425,7 @@ func getRepoIndexFile(req *http.Request) (*repo.IndexFile, error) {
 	return loadIndex(body)
 }
 
-// DownloadIndexFile fetches the index from a repository.
+// GetIndex fetches the index from a repository.
 func (r *ChartRepoReconciler) GetIndex(cr *v1beta1.ChartRepo, ctx context.Context) (*repo.IndexFile, error) {
 	var username string
 	var password string
@@ -590,15 +596,6 @@ func getChartName(repo, chart string) string {
 // generateChartResource create a Chart resource from the information in helm cache index
 func generateChartResource(versions repo.ChartVersions, name string, cr *v1beta1.ChartRepo) *v1beta1.Chart {
 
-	var vs []*v1beta1.ChartVersion
-	for _, v := range versions {
-		vs = append(vs, &v1beta1.ChartVersion{ChartVersion: *v})
-	}
-
-	spec := v1beta1.ChartSpec{
-		Versions: vs,
-	}
-
 	labels := map[string]string{
 		"repo": cr.GetName(),
 	}
@@ -607,6 +604,15 @@ func generateChartResource(versions repo.ChartVersions, name string, cr *v1beta1
 		if project != "" {
 			labels[util.ProjectKey] = project
 		}
+	}
+
+	var vs []*v1beta1.ChartVersion
+	for _, v := range versions {
+		vs = append(vs, &v1beta1.ChartVersion{ChartVersion: *v})
+	}
+
+	spec := v1beta1.ChartSpec{
+		Versions: vs,
 	}
 
 	chart := v1beta1.Chart{

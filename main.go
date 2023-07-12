@@ -16,6 +16,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -25,24 +26,25 @@ import (
 	"sync"
 	"time"
 
-	"k8s.io/client-go/kubernetes"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	"github.com/alauda/captain/pkg/chartrepo"
-
 	"github.com/alauda/captain/controllers"
+	"github.com/alauda/captain/pkg/chartrepo"
 	"github.com/alauda/captain/pkg/cluster"
 	"github.com/alauda/captain/pkg/config"
 	"github.com/alauda/captain/pkg/controller"
 	"github.com/alauda/captain/pkg/webhook"
-	alaudaiov1alpha1 "github.com/alauda/helm-crds/pkg/apis/app/v1alpha1"
-	"github.com/alauda/helm-crds/pkg/apis/app/v1beta1"
+	appv1 "github.com/alauda/helm-crds/pkg/apis/app/v1"
+	appv1alpha1 "github.com/alauda/helm-crds/pkg/apis/app/v1alpha1"
+	appv1beta1 "github.com/alauda/helm-crds/pkg/apis/app/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
+	"k8s.io/klog"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	// +kubebuilder:scaffold:imports
 )
@@ -55,9 +57,11 @@ var (
 func init() {
 	_ = clientgoscheme.AddToScheme(scheme)
 
-	_ = alaudaiov1alpha1.AddToScheme(scheme)
+	_ = appv1alpha1.AddToScheme(scheme)
 
-	_ = v1beta1.AddToScheme(scheme)
+	_ = appv1beta1.AddToScheme(scheme)
+
+	_ = appv1.AddToScheme(scheme)
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -66,11 +70,15 @@ func main() {
 	options.BindFlags()
 
 	var metricsAddr string
+	var probeAddr string
 	var enableLeaderElection bool
 	flag.StringVar(&metricsAddr, "metrics-addr", ":8080", "The address the metric endpoint binds to.")
+	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "enable-leader-election", false,
 		"Enable leader election for controller manager. Enabling this will ensure there is only one active controller manager.")
+	klog.InitFlags(nil)
 	flag.Parse()
+	defer klog.Flush()
 
 	ctrl.SetLogger(zap.New(func(o *zap.Options) {
 		o.Development = true
@@ -85,12 +93,13 @@ func main() {
 
 	rp := time.Second * 120
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:             scheme,
-		MetricsBindAddress: metricsAddr,
-		LeaderElection:     enableLeaderElection,
-		LeaderElectionID:   "captain-controller-lock",
-		Port:               9443,
-		SyncPeriod:         &rp,
+		Scheme:                 scheme,
+		MetricsBindAddress:     metricsAddr,
+		HealthProbeBindAddress: probeAddr,
+		LeaderElection:         enableLeaderElection,
+		LeaderElectionID:       "captain-controller-lock",
+		Port:                   9443,
+		SyncPeriod:             &rp,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -114,7 +123,7 @@ func main() {
 	// read certs if enable webhook
 	if options.EnableWebhook {
 		c := kubernetes.NewForConfigOrDie(mgr.GetConfig())
-		s, err := c.CoreV1().Secrets(os.Getenv("KUBERNETES_NAMESPACE")).Get("captain-webhook-cert", metav1.GetOptions{})
+		s, err := c.CoreV1().Secrets(os.Getenv("KUBERNETES_NAMESPACE")).Get(context.Background(), "captain-webhook-cert", metav1.GetOptions{})
 		if err != nil {
 			setupLog.Error(err, "read secret data error")
 			os.Exit(1)
@@ -157,10 +166,17 @@ func main() {
 
 	// create controller
 	// set up signals so we handle the first shutdown signal gracefully
-	stopCh := ctrl.SetupSignalHandler()
-	_, err = controller.NewController(mgr, &options, stopCh)
+	ctx := ctrl.SetupSignalHandler()
+	ctr, err := controller.NewController(mgr, &options, ctx)
 	if err != nil {
 		setupLog.Error(err, "create controller error")
+		os.Exit(1)
+	}
+
+	// add cluster restarter
+	crt := controller.NewClusterWatchRestarter(ctr)
+	if err := mgr.Add(crt); err != nil {
+		setupLog.Error(err, "add cluster restarter runner error")
 		os.Exit(1)
 	}
 
@@ -177,8 +193,17 @@ func main() {
 		http.ListenAndServe("0.0.0.0:6061", nil)
 	}()
 
+	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+		setupLog.Error(err, "unable to set up health check")
+		os.Exit(1)
+	}
+	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+		setupLog.Error(err, "unable to set up ready check")
+		os.Exit(1)
+	}
+
 	setupLog.Info("starting manager")
-	if err := mgr.Start(stopCh); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}

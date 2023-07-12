@@ -2,12 +2,13 @@ package controller
 
 import (
 	"fmt"
-	"github.com/alauda/captain/pkg/cluster"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/alauda/captain/pkg/cluster"
 	"github.com/alauda/captain/pkg/util"
-	alpha1 "github.com/alauda/helm-crds/pkg/apis/app/v1alpha1"
+	appv1 "github.com/alauda/helm-crds/pkg/apis/app/v1"
 	clientset "github.com/alauda/helm-crds/pkg/client/clientset/versioned"
 	hrScheme "github.com/alauda/helm-crds/pkg/client/clientset/versioned/scheme"
 	informers "github.com/alauda/helm-crds/pkg/client/informers/externalversions"
@@ -16,7 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/kubernetes/typed/core/v1"
+	v1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
@@ -84,6 +85,19 @@ func (c *Controller) initWatchForCluster(stopCh <-chan struct{}, cluster *cluste
 	return nil
 }
 
+func (c *Controller) CleanupClusterWatch(name string) {
+	c.clusterHelmRequestListers[name] = nil
+	c.clusterHelmRequestSynced[name] = nil
+	c.clusterWorkQueues[name] = nil
+	c.clusterClients[name] = nil
+	c.clusterRecorders[name] = nil
+}
+
+// IsClusterWatchStarted check if a cluster watch has been started
+func (c *Controller) IsClusterWatchStarted(name string) bool {
+	return c.clusterClients[name] != nil
+}
+
 // restartClusterWatch will restart the failed cluster watches. In this situation, all the hr will be failed at get release client ,
 // so we will trigger from there and try to re-init the watch and restart it
 func (c *Controller) restartClusterWatch(cluster *cluster.Info) error {
@@ -113,7 +127,10 @@ func (c *Controller) createEventRecorder(cluster string, client kubernetes.Inter
 			Interface: client.CoreV1().Events(""),
 		},
 	)
-	recorder := eventBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: cluster})
+	// In case two global exist, and captain caches access info for the same cluster, this can help us to
+	// find which captain create the event. Default to ""
+	hostIP := os.Getenv("MY_POD_IP")
+	recorder := eventBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: cluster, Host: hostIP})
 	return recorder
 }
 
@@ -271,7 +288,15 @@ func (c *Controller) deleteClusterHelmRequestHandler(obj interface{}, name strin
 		return
 	}
 
-	hr := obj.(*alpha1.HelmRequest)
+	hr, ok := obj.(*appv1.HelmRequest)
+	if !ok {
+		hr, err = convertToV1(obj)
+		if err != nil {
+			utilruntime.HandleError(err)
+			klog.Errorf("can not convert object to v1 helmrequest : %+v", obj)
+			return
+		}
+	}
 	klog.Infof("receive delete event, cluster %s, : %+v", name, hr)
 
 	hr = hr.DeepCopy()

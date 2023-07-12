@@ -1,13 +1,12 @@
 # Release CRD
 
-Release CRD stores the release info of a helm charts, it has some differences compares to the Helm2 format:
+Release CRD 存储了 helm charts 的 release 信息，它与 Helm2 格式相比有一些不同：
 
-* It's a CRD, not a special purpose ConfigMap or Secret
-* No more name conflict between different namespaces
-* It may lives in a different cluster with HelmRequest
+* 它是一个 CRD，而不是一个特殊用途的 ConfigMap 或 Secret
+* 不同命名空间之间不再有名称冲突
+* 它可以与 HelmRequest 位于不同的集群中
 
-
-Here is an example Release resource:
+这是一个`Release`资源示例：
 
 ```yaml
 apiVersion: app.alauda.io/v1alpha1
@@ -41,19 +40,27 @@ status:
   status: deployed
 ```
 
-From the internal view, it also has some improvements compares to the old version:
+从内部来看，与旧版本相比，它也有一些改进：
 
-* Use separated filed to store helm data
-* Move some info the to `status` filed, which is more reasonable
+* 使用多个字段存储 helm 数据
+* 将一些信息移到 `status` 归档，这样更合理
 
+## 关于Release资源配置结构
+Release CRD 定义 [here](https://github.com/alauda/helm-crds/blob/master/pkg/apis/app/v1beta1/types.go#L33)
 
-Now you can use kubectl to get the releases and see there status directly:
+实际上，上面提到的 Release CRD 映射到 Helm 中定义的 Release 结构，可以在这里找到 [here](https://github.com/helm/helm/blob/release-3.0/pkg/release/release.go#L22)
+
+此外，字段 `ChartData`、`ConfigData`、`HooksData` 和 `ManifestData` 都经过 base64 编码并且被`gzip`压缩然后存储。
+
+## 在k8s集群中获取release资源列表
+
+您可以使用 `kubectl` 命令来获取版本、状态信息：
 
 ```bash
 [root@ake-master1 ~]# kubectl get rel --all-namespaces
-NAMESPACE   NAME       STATUS       AGE
-h8          nginx.v1   superseded   2d
-h8          nginx.v2   superseded   2d
-h8          nginx.v3   deployed     2d
+NAMESPACE   NAME                          STATUS       AGE
+h8          sh.helm.release.v1.nginx.v1   superseded   2d
+h8          sh.helm.release.v1.nginx.v2   superseded   2d
+h8          sh.helm.release.v1.nginx.v3   deployed     2d
 [root@ake-master1 ~]#
 ```

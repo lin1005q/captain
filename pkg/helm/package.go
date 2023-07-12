@@ -3,15 +3,16 @@ package helm
 import (
 	"errors"
 	"fmt"
-	"helm.sh/helm/pkg/action"
-	"helm.sh/helm/pkg/chart/loader"
-	"helm.sh/helm/pkg/chartutil"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"path/filepath"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"strings"
+
+	"helm.sh/helm/v3/pkg/action"
+	"helm.sh/helm/v3/pkg/chart/loader"
+	"helm.sh/helm/v3/pkg/chartutil"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 var tempChartsDir = "/tmp/vcs-charts/"
@@ -21,7 +22,7 @@ var log = ctrl.Log.WithName("helm")
 // uploadCharts upload charts from local dir to chartmuseum, repoName is the repo name
 // as well as local sub-dir name
 func uploadCharts(repoName string) error {
-	url := fmt.Sprintf("%s/api/%s/charts", "http://captain-chartmuseum:8080", repoName)
+	url := fmt.Sprintf("%s/api/%s/charts?force=true", "http://captain-chartmuseum:8080", repoName)
 	dir := tempChartsDir + repoName
 
 	// if dir not exist, but no error found before, consider this VCS does not

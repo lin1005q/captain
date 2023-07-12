@@ -17,15 +17,20 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"fmt"
 	"time"
 
-	"github.com/alauda/captain/pkg/helm"
-
-	"sigs.k8s.io/controller-runtime/pkg/manager"
-
+	clusterclientset "github.com/alauda/captain/pkg/clusterregistry/client/clientset/versioned"
 	"github.com/alauda/captain/pkg/config"
+	"github.com/alauda/captain/pkg/helm"
 	"github.com/alauda/captain/pkg/util"
+	appv1 "github.com/alauda/helm-crds/pkg/apis/app/v1"
+	clientset "github.com/alauda/helm-crds/pkg/client/clientset/versioned"
+	informers "github.com/alauda/helm-crds/pkg/client/informers/externalversions"
+	listers "github.com/alauda/helm-crds/pkg/client/listers/app/v1alpha1"
+	commoncache "github.com/patrickmn/go-cache"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -34,14 +39,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog"
-
-	alpha1 "github.com/alauda/helm-crds/pkg/apis/app/v1alpha1"
-	clientset "github.com/alauda/helm-crds/pkg/client/clientset/versioned"
-	commoncache "github.com/patrickmn/go-cache"
-
-	informers "github.com/alauda/helm-crds/pkg/client/informers/externalversions"
-	listers "github.com/alauda/helm-crds/pkg/client/listers/app/v1alpha1"
-	clusterclientset "k8s.io/cluster-registry/pkg/client/clientset/versioned"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
 
 const (
@@ -105,7 +103,7 @@ type Controller struct {
 }
 
 //NewController create a new controller
-func NewController(mgr manager.Manager, opt *config.Options, stopCh <-chan struct{}) (*Controller, error) {
+func NewController(mgr manager.Manager, opt *config.Options, ctx context.Context) (*Controller, error) {
 	cfg := mgr.GetConfig()
 	kubeClient, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
@@ -156,7 +154,7 @@ func NewController(mgr manager.Manager, opt *config.Options, stopCh <-chan struc
 		clusterClients:            make(map[string]clientset.Interface),
 		clusterRecorders:          make(map[string]record.EventRecorder),
 
-		stopCh: stopCh,
+		stopCh: ctx.Done(),
 	}
 
 	klog.Info("Setting up event handlers")
@@ -171,8 +169,7 @@ func NewController(mgr manager.Manager, opt *config.Options, stopCh <-chan struc
 	// kubeInformerFactory.Start(stopCh)
 	// appInformerFactory.Start(stopCh)
 
-	// fuck examples, this should after init controller
-	appInformerFactory.Start(stopCh)
+	appInformerFactory.Start(ctx.Done())
 	// chartRepoInformerFactory.Start(stopCh)
 
 	return controller, mgr.Add(controller)
@@ -187,7 +184,7 @@ func (c *Controller) GetClusterClient() clusterclientset.Interface {
 // as syncing informer caches and starting workers. It will block until stopCh
 // is closed, at which point it will shutdown the workQueue and wait for
 // workers to finish processing their current work items.
-func (c *Controller) Start(stopCh <-chan struct{}) error {
+func (c *Controller) Start(ctx context.Context) error {
 	defer utilruntime.HandleCrash()
 	defer c.workQueue.ShutDown()
 	// defer c.chartRepoWorkQueue.ShutDown()
@@ -196,28 +193,24 @@ func (c *Controller) Start(stopCh <-chan struct{}) error {
 	klog.Info("Starting HelmRequest controller")
 
 	// starts other clusters
-	if err := c.startAllClustersWatch(stopCh); err != nil {
+	if err := c.startAllClustersWatch(ctx.Done()); err != nil {
 		return err
 	}
 
 	// Wait for the caches to be synced before starting workers
 	klog.Info("Waiting for informer caches to sync")
-	if ok := cache.WaitForCacheSync(stopCh, c.helmRequestSynced); !ok {
+	if ok := cache.WaitForCacheSync(ctx.Done(), c.helmRequestSynced); !ok {
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
 
 	klog.Info("Starting workers")
-	// Launch two workers to process HelmRequest resources
-	for i := 0; i < 2; i++ {
-		go wait.Until(c.runWorker, time.Second, stopCh)
-		// go wait.Until(c.runChartRepoWorker, time.Second, stopCh)
-	}
+	go wait.Until(c.runWorker, time.Second, ctx.Done())
 
 	klog.Info("Started workers")
-	<-stopCh
+	<-ctx.Done()
 	klog.Info("Shutting down workers")
 
-	// fuck. this bug. shutdown now manually
+	// shutdown now manually
 	for _, v := range c.clusterWorkQueues {
 		v.ShutDown()
 	}
@@ -288,82 +281,127 @@ func (c *Controller) processNextWorkItem() bool {
 	return true
 }
 
-// see issue: https://github.com/kubernetes/kubernetes/issues/60845
-// the origin code in sample-controller is not working... fuck
-func (c *Controller) updateHelmRequestStatus(helmRequest *alpha1.HelmRequest) error {
+func (c *Controller) updateHelmRequestSynced(helmRequest *appv1.HelmRequest) error {
+	client := c.getAppClient(helmRequest)
+	origin, err := client.AppV1().HelmRequests(helmRequest.Namespace).Get(helmRequest.Name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+
 	// NEVER modify objects from the store. It's a read-only, local cache.
 	// You can use DeepCopy() to make a deep copy of original object and modify this copy
 	// Or create a copy manually for better performance
-	h := helm.GenUniqueHash(helmRequest)
+	h := helm.GenUniqueHash(origin)
 	// Note: we have to generate the hash before the deepcopy, because somehow the deepcopy
 	// can create a spec that have different hash value.
-	request := helmRequest.DeepCopy()
+	request := origin.DeepCopy()
+	request.Status = *helmRequest.Status.DeepCopy()
+
 	request.Status.LastSpecHash = h
-	return c.updateHelmRequestPhase(request, alpha1.HelmRequestSynced)
+	request.Status.Reason = ""
+	request.Status.Phase = appv1.HelmRequestSynced
+
+	request.Status.Conditions = origin.Status.Conditions
+	return helm.UpdateHelmRequestStatus(client, request)
 }
 
 // setPartialSyncedStatus set spec hash and partial-synced status for helm-request
-//TODO: merge with updateHelmRequestStatus
-func (c *Controller) setPartialSyncedStatus(helmRequest *alpha1.HelmRequest) error {
-	h := helm.GenUniqueHash(helmRequest)
-	request := helmRequest.DeepCopy()
+func (c *Controller) setPartialSyncedStatus(helmRequest *appv1.HelmRequest) error {
+	client := c.getAppClient(helmRequest)
+	origin, err := client.AppV1().HelmRequests(helmRequest.Namespace).Get(helmRequest.Name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+
+	h := helm.GenUniqueHash(origin)
+	request := origin.DeepCopy()
 	request.Status.LastSpecHash = h
-	return c.updateHelmRequestPhase(request, alpha1.HelmRequestPartialSynced)
+	request.Status.Reason = ""
+	request.Status.Phase = appv1.HelmRequestPartialSynced
+	return helm.UpdateHelmRequestStatus(client, request)
 }
 
 // setSyncFailedStatus set HelmRequest to Failed and generated a warning event
-func (c *Controller) setSyncFailedStatus(helmRequest *alpha1.HelmRequest, err error) error {
+func (c *Controller) setSyncFailedStatus(helmRequest *appv1.HelmRequest, err error) error {
 	c.sendFailedSyncEvent(helmRequest, err)
-	return c.updateHelmRequestPhase(helmRequest, alpha1.HelmRequestFailed)
+	client := c.getAppClient(helmRequest)
+	origin, errI := client.AppV1().HelmRequests(helmRequest.Namespace).Get(helmRequest.Name, metav1.GetOptions{})
+	if errI != nil {
+		return errI
+	}
+
+	request := origin.DeepCopy()
+	request.Status.Reason = err.Error()
+	request.Status.Phase = appv1.HelmRequestFailed
+	return helm.UpdateHelmRequestStatus(client, request)
 
 }
 
-func (c *Controller) setPendingStatus(helmRequest *alpha1.HelmRequest) error {
-	return c.updateHelmRequestPhase(helmRequest, alpha1.HelmRequestPending)
+func (c *Controller) setPendingStatus(helmRequest *appv1.HelmRequest) error {
+	client := c.getAppClient(helmRequest)
+	origin, err := client.AppV1().HelmRequests(helmRequest.Namespace).Get(helmRequest.Name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+
+	request := origin.DeepCopy()
+	request.Status.Phase = appv1.HelmRequestPending
+	request.Status.Reason = ""
+	return helm.UpdateHelmRequestStatus(client, request)
 }
 
 // getAppClient get a kubernetes app client for the target hr(may be from global cluster or other clusters)
-func (c *Controller) getAppClient(hr *alpha1.HelmRequest) clientset.Interface {
+func (c *Controller) getAppClient(hr *appv1.HelmRequest) clientset.Interface {
 	if hr.ClusterName == "" {
 		return c.appClientSet
-	} else {
-		return c.clusterClients[hr.ClusterName]
 	}
+
+	return c.clusterClients[hr.ClusterName]
+}
+
+// getClusterAppClient get cluster client by name
+func (c *Controller) getClusterAppClient(name string) clientset.Interface {
+	if name == "" {
+		return c.appClientSet
+	}
+
+	return c.clusterClients[name]
 }
 
 // if this helmrequst deployed to a remote cluster, the release cluster will be .spec.clusterName
-func (c *Controller) getAppClientForRelease(hr *alpha1.HelmRequest) clientset.Interface {
+func (c *Controller) getAppClientForRelease(hr *appv1.HelmRequest) clientset.Interface {
 	if hr.Spec.ClusterName == "" {
 		return c.getAppClient(hr)
-	} else {
-		if hr.Spec.ClusterName == "global" {
-			return c.appClientSet
-		}
-		return c.clusterClients[hr.Spec.ClusterName]
 	}
+
+	if hr.Spec.ClusterName == "global" {
+		return c.appClientSet
+	}
+
+	return c.clusterClients[hr.Spec.ClusterName]
 }
 
 func (c *Controller) getHelmRequestLister(name string) listers.HelmRequestLister {
 	if name == "" {
 		return c.helmRequestLister
-	} else {
-		return c.clusterHelmRequestListers[name]
 	}
+
+	return c.clusterHelmRequestListers[name]
 }
 
-func (c *Controller) getEventRecorder(hr *alpha1.HelmRequest) record.EventRecorder {
+func (c *Controller) getEventRecorder(hr *appv1.HelmRequest) record.EventRecorder {
 	if hr.ClusterName == "" {
 		return c.recorder
-	} else {
-		return c.clusterRecorders[hr.ClusterName]
 	}
+
+	return c.clusterRecorders[hr.ClusterName]
 }
 
 // getDeployCluster returns the cluster name which the target Release lives in
-func (c *Controller) getDeployCluster(hr *alpha1.HelmRequest) string {
+func (c *Controller) getDeployCluster(hr *appv1.HelmRequest) string {
 	if hr.Spec.ClusterName != "" {
 		return hr.Spec.ClusterName
-	} else {
-		return hr.ClusterName
 	}
+
+	return hr.ClusterName
 }

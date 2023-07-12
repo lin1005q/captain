@@ -3,13 +3,11 @@ package controller
 import (
 	"testing"
 
-	"github.com/alauda/helm-crds/pkg/apis/app/v1alpha1"
-
-	"github.com/gsamokovarov/assert"
-
-	"github.com/alauda/component-base/hash"
+	"github.com/alauda/captain/pkg/helm"
+	appv1 "github.com/alauda/helm-crds/pkg/apis/app/v1"
 	"github.com/ghodss/yaml"
-	"helm.sh/helm/pkg/chartutil"
+	"github.com/gsamokovarov/assert"
+	"helm.sh/helm/v3/pkg/chartutil"
 )
 
 func TestHelmRequestDeepCopyHash(t *testing.T) {
@@ -24,15 +22,15 @@ func TestHelmRequestDeepCopyHash(t *testing.T) {
         memory: 10m`
 	var v chartutil.Values
 	yaml.Unmarshal([]byte(values), &v)
-	hr := &v1alpha1.HelmRequest{
-		Spec: v1alpha1.HelmRequestSpec{
+	hr := &appv1.HelmRequest{
+		Spec: appv1.HelmRequestSpec{
 			Chart:                "stable/captain-test-demo",
 			InstallToAllClusters: true,
 			Namespace:            "default",
 			ReleaseName:          "cpatain-test-demo",
-			HelmValues:           v1alpha1.HelmValues{Values: v},
+			HelmValues:           appv1.HelmValues{Values: v},
 			Version:              "1.2.1",
 		},
 	}
-	assert.Equal(t, hash.GenHashStr(hr.Spec), hash.GenHashStr(hr.DeepCopy().Spec))
+	assert.Equal(t, helm.GenHashStr(hr.Spec), helm.GenHashStr(hr.DeepCopy().Spec))
 }

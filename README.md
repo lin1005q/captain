@@ -14,10 +14,7 @@ Captain is a Helm 3 Controller
 
 ## About Helm3 
 
-The [Helm 3 Design Proposal](https://github.com/helm/community/blob/master/helm-v3/000-helm-v3.md) exists for a while and currently it is still under heavy development. Captain comes as the first implementation of Helm v3 Controller based on the Proposal.
-
-This project is based on the core [helm](https://github.com/helm/helm) v3 code, acting as a library. Since it's not officially 
-released yet (alpha stage for now), some modifications were made to help implement this controller on a fork: [alauda/helm](https://github.com/alauda/helm) (will be deprecated once Helm's library is released).
+This project is based on the core [helm](https://github.com/helm/helm) v3 code, acting as a library. Some modifications were made to help implement this controller on a fork: [alauda/helm](https://github.com/alauda/helm) .
 
 ## Features
 * HelmRequest/ChartRepo/Release CRD, namespace based
@@ -27,16 +24,18 @@ released yet (alpha stage for now), some modifications were made to help impleme
 * Dependency check for HelmRequest (between HelmRequests)
 * `valuesFrom` support: support to ConfigMap or Secret value store
 * `kubectl apply` like resource manipulation: no more resource conflict and CRD management issues
+* OCI chart support
+* HTTP downloadable chart support
 
 
 ## Quick Start
-Check the [Installation Guide](./docs/install.md) to learn how to install captain
+Check the [Installation Guide](./docs/en/install.md) to learn how to install captain
 
 Then, create a HelmRequest resource 
 
 ```yaml
 kind: HelmRequest
-apiVersion: app.alauda.io/v1alpha1
+apiVersion: app.alauda.io/v1
 metadata:
   name: nginx-ingress
 spec:
@@ -60,14 +59,15 @@ For the detailed explain and advanced usage, please check the documentation belo
 
 ## Documention
 
-* [How captain works](./docs/captain.md)
-* [Captain Upgrade](./docs/upgrade.md)
-* [CRDs explain](./docs/crd.md)
-* [Multi-Cluster Support](./docs/multi-cluster.md)
-* [Git/SVN as ChartRepo](./docs/vcs-repo.md)
-* [Annotations](./docs/ano.md)
-* [ARM64 Support](./docs/arm64.md)
-* [FAQ](./docs/faq.md)
+* [How captain works](./docs/en/captain.md)
+* [Captain Upgrade](./docs/en/upgrade.md)
+* [CRDs explain](./docs/en/crd.md)
+* [Multi-Cluster Support](./docs/en/multi-cluster.md)
+* [Git/SVN as ChartRepo](./docs/en/vcs-repo.md)
+* [Annotations](./docs/en/ano.md)
+* [OCI Support](./docs/en/crds/helmrequest.md#helmrequest-oci-support)
+* [ARM64 Support](./docs/en/arm64.md)
+* [FAQ](./docs/en/faq.md)
 
 ## SDK
 * [Golang](https://github.com/alauda/helm-crds): also contains the CRD definition

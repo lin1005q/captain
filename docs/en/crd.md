@@ -13,6 +13,7 @@
         - [spec.dependencies](#specdependencies)
         - [spec.values](#specvalues)
         - [spec.valuesFrom](#specvaluesfrom)
+        - [spec.source](#specsource)
     - [ChartRepo](#chartrepo)
         - [Basic Auth](#basic-auth)
         - [Type](#chartrepo-type)
@@ -39,7 +40,7 @@ An example HelmRequest looks like this(after setting some defaults):
 
 
 ```yaml
-apiVersion: app.alauda.io/v1alpha1
+apiVersion: app.alauda.io/v1
 kind: HelmRequest
 metadata:
   finalizers:
@@ -132,7 +133,43 @@ spec:
 
 Centralized configuration can be a great helper to manage multiple HelmRequest resources. 
 
+### spec.source
 
+Helmrequest now supports version v1 and has added new fields.
+
+The chart's source. It's optional, this will indicate the source of the current chart, which will be an OCI or HTTP URL address.
+If basic authentication is required, specify a secretname in the `spec.source.oci` or `spec.source.http`.
+
+As shown in the following examples
+
+```yaml
+# OCI type
+apiVersion: app.alauda.io/v1
+kind: HelmRequest
+metadata:
+  name: test-oci
+  namespace: default
+spec:
+  source:
+    oci:
+      repo: 192.168.26.40:60080/acp/chart-tomcat         # oci repo address
+      secretRef: ociSecret      # optional, if basic authentication is required, specify a secretname here.
+  values:
+    namespace: default
+  version: 9.2.9    # required, oci version
+---
+# HTTP type
+apiVersion: app.alauda.io/v1
+kind: HelmRequest
+metadata:
+  name: test-http
+  namespace: default
+spec:
+  source:
+    http:
+      url: https://alauda.github.io/captain-test-charts/wordpress-lookup-11.0.13.tgz
+  values: {}
+```
 
 
 ## ChartRepo
@@ -141,7 +178,7 @@ Centralized configuration can be a great helper to manage multiple HelmRequest r
 The definition is quite simple, For example, the most simplest ones is :
 
 ```yaml
-apiVersion: app.alauda.io/v1alpha1
+apiVersion: app.alauda.io/v1beta1
 kind: ChartRepo
 metadata:
   name: stable
@@ -182,7 +219,7 @@ Of course ,many repos need auth support. Currently, `ChartRepo` has support basi
 a secret resource in the spec:
 
 ```yaml
-apiVersion: app.alauda.io/v1alpha1
+apiVersion: app.alauda.io/v1beta1
 kind: ChartRepo
 metadata:
   name: new
@@ -220,7 +257,7 @@ From version `0.9.2`, captain add a `Chart` CRD to represents helm charts info. 
 NAME         VERSION   APPVERSION   AGE
 seq.stable   1.0.2     5            7d
 [root@ace-master-1 ~]# kubectl  get charts.app.alauda.io -n alauda-system seq.stable -o yaml
-apiVersion: app.alauda.io/v1alpha1
+apiVersion: app.alauda.io/v1beta1
 kind: Chart
 metadata:
   creationTimestamp: "2019-09-17T05:58:19Z"
@@ -292,7 +329,7 @@ A little explanation
 * the name of this chart choose the format of `<chart-name>.<repo-name>`, because different repo can have chart with the same name
 * `.spec` contains list of chart versions, which contains all the metadata a chart version have
 
-After a [ChartRepo](https://github.com/alauda/captain/blob/master/docs/chartrepo.md) was created ,captain will start to sync the charts this repo have and create all the charts resources,  mostly this will only take less than a minute.
+After a [ChartRepo](https://github.com/alauda/captain/blob/master/docs/en/crds/chartrepo.md) was created ,captain will start to sync the charts this repo have and create all the charts resources,  mostly this will only take less than a minute.
 For now the charts resources only serves to api usage, captain still use helm's local cache to locate chart, but this will be soon changed.
 
 ## Release CRD
@@ -348,9 +385,9 @@ Now you can use kubectl to get the releases and see there status directly:
 
 ```bash
 [root@ake-master1 ~]# kubectl get rel --all-namespaces
-NAMESPACE   NAME       STATUS       AGE
-h8          nginx.v1   superseded   2d
-h8          nginx.v2   superseded   2d
-h8          nginx.v3   deployed     2d
+NAMESPACE   NAME                          STATUS       AGE
+h8          sh.helm.release.v1.nginx.v1   superseded   2d
+h8          sh.helm.release.v1.nginx.v2   superseded   2d
+h8          sh.helm.release.v1.nginx.v3   deployed     2d
 [root@ake-master1 ~]#
 ```
